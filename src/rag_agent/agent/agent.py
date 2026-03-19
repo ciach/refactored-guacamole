@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 from rag_agent.agent.deps import AgentDeps
 from rag_agent.agent.tools import graph_search_tool, hybrid_search_tool, vector_search_tool
+from rag_agent.config import Settings
+from rag_agent.llm.models import build_openai_text_model
 from rag_agent.models import AgentAnswer, Citation, GraphFact, SourceChunk
 from rag_agent.prompts import SYSTEM_PROMPT
 
@@ -60,7 +62,10 @@ def _compose_answer(question: str, vector_hits: list[SourceChunk], graph_hits: l
     return AgentAnswer(answer=answer, reasoning_summary=reasoning, used_strategy=strategy, citations=citations)
 
 
+@dataclass
 class OfflineRagAgent:
+    model_name: str
+
     async def run(self, question: str, deps: AgentDeps) -> SimpleNamespace:
         decision = route_query(question)
         ctx = SimpleNamespace(deps=deps)
@@ -77,12 +82,11 @@ class OfflineRagAgent:
         return SimpleNamespace(output=_compose_answer(question, vector_hits, graph_hits, decision.strategy, decision.reasoning))
 
 
-def build_agent() -> object:
+def build_agent(settings: Settings) -> object:
+    model = build_openai_text_model(settings, role="default")
     try:  # pragma: no cover - exercised when dependencies are installed.
         from pydantic_ai import Agent
-        from pydantic_ai.models.openai import OpenAIResponsesModel
 
-        model = OpenAIResponsesModel("gpt-5")
         return Agent(
             model=model,
             deps_type=AgentDeps,
@@ -91,12 +95,10 @@ def build_agent() -> object:
             tools=[vector_search_tool, graph_search_tool, hybrid_search_tool],
         )
     except Exception:
-        return OfflineRagAgent()
-
-
-rag_agent = build_agent()
+        return OfflineRagAgent(model_name=settings.resolve_text_model("default"))
 
 
 async def run_query(question: str, deps: AgentDeps) -> AgentAnswer:
-    result = await rag_agent.run(question, deps=deps)
+    agent = build_agent(deps.settings)
+    result = await agent.run(question, deps=deps)
     return result.output

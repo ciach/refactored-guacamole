@@ -19,6 +19,7 @@ rag_agent/
 ├── src/rag_agent/
 │   ├── agent/
 │   ├── ingest/
+│   ├── llm/
 │   ├── retrieval/
 │   ├── storage/
 │   ├── bootstrap.py
@@ -36,8 +37,24 @@ rag_agent/
 - **uv** owns project metadata and environment management.
 - **PydanticAI** owns typed agent wiring, tool registration, and structured outputs when installed.
 - **Rich** makes the CLI inspectable with strategy, traces, and citations.
-- **OpenAI** powers both answer generation and embedding/extraction integration points.
+- **OpenAI** powers answer generation and embedding/extraction integration points.
 - **Postgres + pgvector** and **Neo4j** are represented as storage adapters, but tests use in-memory stores so the repository works without external services.
+
+## Model configuration
+
+The app now supports **two text-generation roles** without turning model choice into a maze of knobs:
+
+- `OPENAI_MODEL_DEFAULT`: main synthesis model for the user-facing answer.
+- `OPENAI_MODEL_FAST`: optional cheaper/faster model reserved for lightweight preprocessing tasks.
+- `OPENAI_EMBEDDING_MODEL`: dedicated embedding model.
+
+Compatibility behavior:
+
+- `OPENAI_MODEL` is still accepted temporarily as a deprecated alias.
+- `OPENAI_MODEL_DEFAULT` wins when both are set.
+- `OPENAI_MODEL_FAST` falls back to the resolved default model when omitted.
+
+Today the app uses the **default** model for the main answer-generation path. The **fast** role is available through the model helper and can be adopted later for narrowly-scoped preprocessing steps such as query rewriting or condensation.
 
 ## Quick start
 
