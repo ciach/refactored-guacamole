@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Literal
 
 from rag_agent.agent.deps import AgentDeps
 from rag_agent.agent.tools import graph_search_tool, hybrid_search_tool, vector_search_tool
@@ -10,6 +11,9 @@ from rag_agent.llm.models import build_openai_text_model
 from rag_agent.models import AgentAnswer, Citation, GraphFact, SourceChunk
 from rag_agent.prompts import SYSTEM_PROMPT
 
+StrategyName = Literal["vector", "graph", "hybrid"]
+StrategyOverride = Literal["auto", "vector", "graph", "hybrid"] | None
+
 VECTOR_HINTS = {"what is", "summarize", "describe", "mention", "explain"}
 GRAPH_HINTS = {"relationship", "connected", "depends on", "before", "after", "timeline", "who works with"}
 HYBRID_HINTS = {"compare", "analyze", "why", "impact", "tradeoff"}
@@ -17,8 +21,18 @@ HYBRID_HINTS = {"compare", "analyze", "why", "impact", "tradeoff"}
 
 @dataclass
 class RouteDecision:
-    strategy: str
+    strategy: StrategyName
     reasoning: str
+
+
+@dataclass
+class QueryExecution:
+    answer: AgentAnswer
+    vector_hits: list[SourceChunk]
+    graph_hits: list[GraphFact]
+    model_name: str
+    fast_model_name: str
+    trace: list[str]
 
 
 def route_query(question: str) -> RouteDecision:
@@ -30,6 +44,12 @@ def route_query(question: str) -> RouteDecision:
     if any(hint in normalized for hint in VECTOR_HINTS):
         return RouteDecision("vector", "Used vector_search because the query is descriptive or topical.")
     return RouteDecision("hybrid", "Used hybrid_search because the query is ambiguous and benefits from both evidence types.")
+
+
+def resolve_strategy(question: str, strategy_override: StrategyOverride = None) -> RouteDecision:
+    if strategy_override in {"vector", "graph", "hybrid"}:
+        return RouteDecision(strategy_override, f"Used {strategy_override}_search because the strategy was overridden for this run.")
+    return route_query(question)
 
 
 def _chunk_to_citation(chunk: SourceChunk) -> Citation:
@@ -51,7 +71,7 @@ def _fact_to_citation(fact: GraphFact) -> Citation:
     )
 
 
-def _compose_answer(question: str, vector_hits: list[SourceChunk], graph_hits: list[GraphFact], strategy: str, reasoning: str) -> AgentAnswer:
+def _compose_answer(question: str, vector_hits: list[SourceChunk], graph_hits: list[GraphFact], strategy: StrategyName, reasoning: str) -> AgentAnswer:
     evidence_parts = [chunk.text for chunk in vector_hits[:2]] + [
         f"{fact.subject} {fact.predicate} {fact.obj}: {fact.evidence or ''}".strip()
         for fact in graph_hits[:2]
@@ -67,19 +87,8 @@ class OfflineRagAgent:
     model_name: str
 
     async def run(self, question: str, deps: AgentDeps) -> SimpleNamespace:
-        decision = route_query(question)
-        ctx = SimpleNamespace(deps=deps)
-        if decision.strategy == "vector":
-            vector_hits = await vector_search_tool(ctx, question, deps.settings.top_k_vector)
-            graph_hits: list[GraphFact] = []
-        elif decision.strategy == "graph":
-            vector_hits = []
-            graph_hits = await graph_search_tool(ctx, question, deps.settings.top_k_graph)
-        else:
-            payload = await hybrid_search_tool(ctx, question, deps.settings.top_k_hybrid)
-            vector_hits = [SourceChunk(**hit) for hit in payload["vector_hits"]]
-            graph_hits = [GraphFact(**hit) for hit in payload["graph_hits"]]
-        return SimpleNamespace(output=_compose_answer(question, vector_hits, graph_hits, decision.strategy, decision.reasoning))
+        execution = await execute_query(question, deps)
+        return SimpleNamespace(output=execution.answer)
 
 
 def build_agent(settings: Settings) -> object:
@@ -98,7 +107,42 @@ def build_agent(settings: Settings) -> object:
         return OfflineRagAgent(model_name=settings.resolve_text_model("default"))
 
 
-async def run_query(question: str, deps: AgentDeps) -> AgentAnswer:
-    agent = build_agent(deps.settings)
-    result = await agent.run(question, deps=deps)
-    return result.output
+async def execute_query(question: str, deps: AgentDeps, strategy_override: StrategyOverride = None) -> QueryExecution:
+    decision = resolve_strategy(question, strategy_override)
+    ctx = SimpleNamespace(deps=deps)
+    model_name = deps.settings.resolve_text_model("default")
+    fast_model_name = deps.settings.resolve_text_model("fast")
+    trace = [
+        f"default_model={model_name}",
+        f"fast_model={fast_model_name}",
+        f"strategy={decision.strategy}",
+        f"strategy_override={strategy_override or 'auto'}",
+    ]
+
+    if decision.strategy == "vector":
+        vector_hits = await vector_search_tool(ctx, question, deps.settings.top_k_vector)
+        graph_hits: list[GraphFact] = []
+    elif decision.strategy == "graph":
+        vector_hits = []
+        graph_hits = await graph_search_tool(ctx, question, deps.settings.top_k_graph)
+    else:
+        payload = await hybrid_search_tool(ctx, question, deps.settings.top_k_hybrid)
+        vector_hits = [SourceChunk(**hit) for hit in payload["vector_hits"]]
+        graph_hits = [GraphFact(**hit) for hit in payload["graph_hits"]]
+
+    trace.append(f"vector_hits={len(vector_hits)}")
+    trace.append(f"graph_hits={len(graph_hits)}")
+    answer = _compose_answer(question, vector_hits, graph_hits, decision.strategy, decision.reasoning)
+    return QueryExecution(
+        answer=answer,
+        vector_hits=vector_hits,
+        graph_hits=graph_hits,
+        model_name=model_name,
+        fast_model_name=fast_model_name,
+        trace=trace,
+    )
+
+
+async def run_query(question: str, deps: AgentDeps, strategy_override: StrategyOverride = None) -> AgentAnswer:
+    execution = await execute_query(question, deps, strategy_override=strategy_override)
+    return execution.answer

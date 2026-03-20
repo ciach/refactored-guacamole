@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from typing import Any, Callable
@@ -20,9 +19,9 @@ try:  # pragma: no cover - exercised when Typer is installed.
 except Exception:  # pragma: no cover
     typer = None
 
-from rag_agent.agent.agent import run_query
-from rag_agent.bootstrap import build_deps
 from rag_agent.models import AgentAnswer
+from rag_agent.tui.app import launch_tui
+from rag_agent.tui.services import run_query_with_trace_sync
 
 console = Console() if Console is not None else None
 
@@ -44,9 +43,14 @@ class _FallbackApp:
         ask_parser = subparsers.add_parser("ask", help="Ask one grounded question")
         ask_parser.add_argument("question")
         ask_parser.add_argument("--as-json", action="store_true")
+        tui_parser = subparsers.add_parser("tui", help="Launch the Textual TUI")
+        tui_parser.set_defaults(_noop=True)
         args = parser.parse_args(sys.argv[1:])
         command = self._commands[args.command]
-        command(question=args.question, as_json=args.as_json)
+        kwargs = vars(args)
+        kwargs.pop("command", None)
+        kwargs.pop("_noop", None)
+        command(**kwargs)
 
 
 def _render_answer(output: AgentAnswer) -> None:
@@ -74,10 +78,23 @@ app = typer.Typer(help="CLI-first RAG agent") if typer is not None else _Fallbac
 
 @app.command()
 def ask(question: str, as_json: bool = False) -> None:
-    """Ask one grounded question using the single retrieval agent."""
+    """Ask one grounded question using the shared query execution service."""
 
-    output = asyncio.run(run_query(question=question, deps=build_deps()))
+    result = run_query_with_trace_sync(question=question)
+    output = AgentAnswer(
+        answer=result.answer,
+        reasoning_summary=result.reasoning_summary,
+        used_strategy=result.used_strategy,
+        citations=result.citations,
+    )
     if as_json:
-        print(json.dumps(output.model_dump(), indent=2))
+        print(json.dumps(result.model_dump(), indent=2))
         return
     _render_answer(output)
+
+
+@app.command()
+def tui() -> None:
+    """Launch the Textual terminal UI."""
+
+    launch_tui()

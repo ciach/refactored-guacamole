@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from rag_agent.agent.deps import AgentDeps
-from rag_agent.config import settings
+from rag_agent.config import Settings, settings as default_settings
 from rag_agent.models import GraphFact, SourceChunk
 from rag_agent.retrieval.graph_store import InMemoryGraphStore
 from rag_agent.retrieval.vector_store import InMemoryVectorStore
@@ -48,7 +48,8 @@ SAMPLE_FACTS = [
 ]
 
 
-def build_deps() -> AgentDeps:
+def build_deps(settings: Settings | None = None) -> AgentDeps:
+    active_settings = settings or default_settings
     vector_store = InMemoryVectorStore(seed_chunks=SAMPLE_CHUNKS)
     graph_store = InMemoryGraphStore(seed_facts=SAMPLE_FACTS)
-    return AgentDeps(settings=settings, vector_store=vector_store, graph_store=graph_store)
+    return AgentDeps(settings=active_settings, vector_store=vector_store, graph_store=graph_store)
